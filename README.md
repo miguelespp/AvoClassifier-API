@@ -19,7 +19,7 @@ API REST backend para clasificar enfermedades en imágenes de aguacate mediante 
 source .venv/bin/activate     # Linux/macOS
 
 # 2. Instalar dependencias
-pip install Django==6.0.5 djangorestframework djangorestframework-simplejwt django-cors-headers Pillow
+pip install -r requirements.txt
 
 # 3. Aplicar migraciones
 python manage.py migrate
