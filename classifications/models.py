@@ -3,26 +3,25 @@ from django.db import models
 
 
 class DiseaseCategory(models.TextChoices):
-    # TODO: reemplazar con los nombres reales de las 3 categorías
-    CATEGORY_A = 'category_a', 'Categoría A'
-    CATEGORY_B = 'category_b', 'Categoría B'
-    CATEGORY_C = 'category_c', 'Categoría C'
+    SALUDABLE = "saludable", "Saludable"
+    ANTRACNOSIS = "antracnosis", "Antracnosis"
+    PUDRICION = "pudricion", "Pudrición Radicular"
 
 
 class ClassificationStatus(models.TextChoices):
-    PENDING = 'pending', 'Pendiente'
-    PROCESSING = 'processing', 'Procesando'
-    COMPLETED = 'completed', 'Completado'
-    FAILED = 'failed', 'Fallido'
+    PENDING = "pending", "Pendiente"
+    PROCESSING = "processing", "Procesando"
+    COMPLETED = "completed", "Completado"
+    FAILED = "failed", "Fallido"
 
 
 class Classification(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='classifications',
+        related_name="classifications",
     )
-    image = models.ImageField(upload_to='classifications/%Y/%m/%d/')
+    image = models.ImageField(upload_to="classifications/%Y/%m/%d/")
     status = models.CharField(
         max_length=20,
         choices=ClassificationStatus.choices,
@@ -31,7 +30,7 @@ class Classification(models.Model):
 
     # Resultado de la IA
     predicted_category = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=DiseaseCategory.choices,
         blank=True,
     )
@@ -44,7 +43,7 @@ class Classification(models.Model):
     classified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ["-created_at"]
 
     def __str__(self):
-        return f'Classification {self.pk} - {self.user.email} [{self.status}]'
+        return f"Classification {self.pk} - {self.user.email} [{self.status}]"
