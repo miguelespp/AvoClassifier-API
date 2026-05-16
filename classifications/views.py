@@ -33,11 +33,12 @@ User = get_user_model()
     summary="Clasificar imagen de aguacate",
     description=(
         "Sube una imagen JPG/PNG y obtiene la clasificación de enfermedad.\n\n"
-        "El resultado puede ser `saludable`, `antracnosis` o `pudricion_radicular`.\n\n"
+        "**Formato de la petición:** `multipart/form-data` con el campo `image`.\n\n"
+        "**Categorías posibles:** `saludable`, `antracnosis`, `pudricion`.\n\n"
         "Si el procesamiento es lento, el cliente puede hacer polling a "
         "`GET /api/classifications/{id}/` usando el `id` devuelto."
     ),
-    request=ClassificationCreateSerializer,
+    request={"multipart/form-data": ClassificationCreateSerializer},
     responses={201: ClassificationResultSerializer},
 )
 class ClassificationCreateView(generics.CreateAPIView):
