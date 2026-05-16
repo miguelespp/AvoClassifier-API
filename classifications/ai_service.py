@@ -136,10 +136,7 @@ class AvocadoClassifierService:
             RuntimeError: Si load() aún no fue llamado.
         """
         if self._model is None:
-            raise RuntimeError(
-                "El modelo no está cargado. Asegúrate de que ClassificationsConfig.ready() "
-                "haya llamado a classifier.load()."
-            )
+            self.load()  # carga diferida: primer predict activa la carga
 
         tensor = self._preprocess(image_path)
         scores = self._run_inference(tensor)
