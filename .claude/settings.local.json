@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python manage.py makemigrations classifications)",
+      "Bash(python manage.py migrate)",
+      "Bash(python manage.py check)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\esp15\\\\Proyectos\\\\py_pr\\\\tsm_pr\" -Force)",
+      "Bash(Select-Object -Property Name, PSIsContainer)",
+      "Bash(Format-Table)",
+      "PowerShell(.venv\\\\Scripts\\\\python manage.py spectacular --validate --fail-on-warn 2>&1 | Select-Object -Last 10)",
+      "PowerShell(.venv\\\\Scripts\\\\python manage.py check 2>&1 | Select-Object -Last 5)"
+    ]
+  }
+}

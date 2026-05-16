@@ -1,13 +1,18 @@
 """
 Capa de servicio para el modelo de clasificación de enfermedades en palta.
 
-Para integrar el modelo real:
-  1. Implementar _load_model() con la carga del modelo (torch, tensorflow, etc.)
-  2. Implementar _preprocess(image_path) con el preprocesamiento requerido
-  3. Implementar _run_inference(tensor) con la inferencia
-  4. Ajustar CATEGORIES con los nombres reales de las 3 clases
+Estrategia de carga:
+  1. Se intenta cargar el modelo Keras 3.x desde settings.AI_MODEL_DIR.
+  2. Si Keras / TensorFlow no están disponibles (p.ej. Python 3.14 donde TF aún no
+     corre), el modelo se marca como 'UNAVAILABLE' y la inferencia cae en el modo
+     heurístico basado en estadísticas de color de la imagen.
+  3. Cuando TF/Keras esté disponible, no se necesita cambiar nada: el clasificador
+     detectará el modelo cargado y usará _run_inference() real.
 
-El resto del flujo (guardar resultado, manejar errores, actualizar status) ya está listo.
+Categorías (deben coincidir con DiseaseCategory en classifications/models.py):
+  - saludable   → fruto sin enfermedad visible
+  - antracnosis → manchas oscuras/marrones por Colletotrichum
+  - pudricion   → podredumbre radicular (Phytophthora/Pythium)
 """
 
 from __future__ import annotations
@@ -18,39 +23,100 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Debe coincidir EXACTAMENTE con los valores de DiseaseCategory en models.py
+CATEGORIES: list[str] = ["saludable", "antracnosis", "pudricion"]
 
-# TODO: reemplazar con los nombres reales de las 3 categorías de enfermedad
-CATEGORIES: list[str] = ['category_a', 'category_b', 'category_c']
+# Sentinel para indicar que el backend ML no pudo cargarse
+_UNAVAILABLE = "UNAVAILABLE"
 
 
 @dataclass
 class ClassificationResult:
     predicted_category: str
-    confidence: float          # score de la categoría ganadora (0.0 - 1.0)
-    raw_scores: dict[str, float]  # score por cada categoría
+    confidence: float  # probabilidad de la categoría ganadora (0.0–1.0)
+    raw_scores: dict[str, float]  # probabilidad por cada categoría
 
 
 class AvocadoClassifierService:
     """
     Wrapper del modelo de IA. Mantiene el modelo en memoria entre llamadas.
-    Instanciar una sola vez (singleton) para evitar recargas.
+    Se instancia una sola vez (singleton) para evitar recargas.
+
+    Modos de operación
+    ------------------
+    - **keras**     : modelo Keras 3.x cargado desde AI_MODEL_DIR. Inferencia real.
+    - **heuristic** : Keras/TF no disponibles. Inferencia por estadísticas de color.
+    - **none**      : load() todavía no fue llamado.
     """
 
-    _instance: Optional['AvocadoClassifierService'] = None
-    _model = None
+    _instance: Optional["AvocadoClassifierService"] = None
+    _model = None  # None → no cargado; _UNAVAILABLE → sin backend ML; objeto → listo
 
-    def __new__(cls) -> 'AvocadoClassifierService':
+    def __new__(cls) -> "AvocadoClassifierService":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    # ------------------------------------------------------------------
+    # Ciclo de vida
+    # ------------------------------------------------------------------
+
     def load(self) -> None:
-        """Carga el modelo en memoria. Llamar al iniciar la aplicación (AppConfig.ready)."""
+        """
+        Carga el modelo en memoria.
+        Llamado automáticamente desde ClassificationsConfig.ready() al iniciar Django.
+        Es seguro llamarlo varias veces: sólo carga una vez.
+        """
         if self._model is not None:
             return
-        logger.info('Cargando modelo de clasificación de palta...')
+        logger.info("Cargando modelo de clasificación de palta…")
         self._model = self._load_model()
-        logger.info('Modelo cargado correctamente.')
+        if self._model is _UNAVAILABLE:
+            logger.warning(
+                "Backend ML no disponible. Se usará inferencia heurística por color. "
+                "Instalar keras/tensorflow cuando Python 3.14 sea soportado."
+            )
+        else:
+            logger.info("Modelo Keras cargado correctamente desde AI_MODEL_DIR.")
+
+    def reload(self) -> None:
+        """Descarga y recarga el modelo. Útil para hot-reload en desarrollo."""
+        self._model = None
+        self.load()
+
+    # ------------------------------------------------------------------
+    # Propiedades de estado
+    # ------------------------------------------------------------------
+
+    @property
+    def is_model_loaded(self) -> bool:
+        """True sólo cuando el modelo Keras real está en memoria."""
+        return self._model is not None and self._model is not _UNAVAILABLE
+
+    @property
+    def model_status(self) -> dict:
+        """
+        Diccionario descriptivo del estado actual del servicio.
+
+        Ejemplo (Keras disponible):
+            {'loaded': True, 'backend': 'keras', 'categories': [...]}
+        Ejemplo (sin TF):
+            {'loaded': False, 'backend': 'heuristic', 'categories': [...]}
+        Ejemplo (antes de load()):
+            {'loaded': False, 'backend': 'none', 'categories': [...]}
+        """
+        if self._model is None:
+            backend = "none"
+        elif self._model is _UNAVAILABLE:
+            backend = "heuristic"
+        else:
+            backend = "keras"
+
+        return {
+            "loaded": self.is_model_loaded,
+            "backend": backend,
+            "categories": CATEGORIES,
+        }
 
     # ------------------------------------------------------------------
     # Método principal
@@ -61,16 +127,19 @@ class AvocadoClassifierService:
         Clasifica una imagen y devuelve el resultado.
 
         Args:
-            image_path: Ruta absoluta al archivo de imagen en disco.
+            image_path: Ruta absoluta (o relativa al CWD) al archivo de imagen.
 
         Returns:
-            ClassificationResult con la categoría predicha y los scores.
+            ClassificationResult con la categoría predicha, confianza y scores crudos.
 
         Raises:
-            RuntimeError: Si el modelo no fue cargado o la inferencia falla.
+            RuntimeError: Si load() aún no fue llamado.
         """
         if self._model is None:
-            raise RuntimeError('El modelo no está cargado. Llamar a load() primero.')
+            raise RuntimeError(
+                "El modelo no está cargado. Asegúrate de que ClassificationsConfig.ready() "
+                "haya llamado a classifier.load()."
+            )
 
         tensor = self._preprocess(image_path)
         scores = self._run_inference(tensor)
@@ -85,37 +154,177 @@ class AvocadoClassifierService:
         )
 
     # ------------------------------------------------------------------
-    # Métodos a implementar cuando llegue el modelo real
+    # Implementaciones internas
     # ------------------------------------------------------------------
 
     def _load_model(self):
-        # TODO: cargar pesos del modelo
-        # Ejemplo PyTorch:
-        #   import torch
-        #   model = MyModelClass()
-        #   model.load_state_dict(torch.load(settings.AI_MODEL_PATH))
-        #   model.eval()
-        #   return model
-        raise NotImplementedError('Implementar _load_model con el modelo real.')
+        """
+        Carga el modelo Keras 3.x en formato directorio (config.json + model.weights.h5).
+
+        Búsqueda del modelo en settings.AI_MODEL_DIR:
+          1. Si el directorio contiene directamente config.json → lo carga.
+          2. Si no, busca el primer subdirectorio *.keras y lo carga.
+
+        Se usa deserialize_keras_object + load_weights en lugar de
+        keras.saving.load_model porque éste último falla en Windows cuando
+        el path termina en .keras pero es un directorio (no un zip).
+        """
+        try:
+            import json
+            import pathlib
+
+            import keras
+            from django.conf import settings
+
+            base = pathlib.Path(settings.AI_MODEL_DIR)
+            model_dir = self._resolve_model_dir(base)
+            logger.info("Cargando modelo desde: %s", model_dir)
+
+            config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+            model = keras.saving.deserialize_keras_object(config)
+            model.load_weights(str(model_dir / "model.weights.h5"))
+            return model
+
+        except (ImportError, ModuleNotFoundError) as exc:
+            logger.warning(
+                "keras/tensorflow no disponibles (%s). "
+                "Se activa el modo heurístico de respaldo.",
+                exc,
+            )
+            return _UNAVAILABLE
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Error inesperado al cargar el modelo Keras: %s. "
+                "Se activa el modo heurístico de respaldo.",
+                exc,
+                exc_info=True,
+            )
+            return _UNAVAILABLE
+
+    @staticmethod
+    def _resolve_model_dir(base):
+        """
+        Resuelve el directorio concreto del modelo dentro de base.
+
+        Prioridad:
+          1. base contiene config.json → es el propio directorio del modelo.
+          2. base tiene un único subdirectorio *.keras → lo usa.
+          3. Lanza FileNotFoundError si no encuentra ninguno.
+        """
+        import pathlib
+
+        base = pathlib.Path(base)
+        if (base / "config.json").exists():
+            return base
+        candidates = sorted(base.glob("*.keras"))
+        if candidates:
+            return candidates[0]
+        raise FileNotFoundError(
+            f"No se encontró ningún modelo Keras en '{base}'. "
+            "Debe contener config.json o un subdirectorio *.keras."
+        )
 
     def _preprocess(self, image_path: str):
-        # TODO: aplicar transformaciones requeridas por el modelo
-        # Ejemplo:
-        #   from PIL import Image
-        #   import torchvision.transforms as T
-        #   transform = T.Compose([T.Resize((224, 224)), T.ToTensor(), ...])
-        #   return transform(Image.open(image_path).convert('RGB')).unsqueeze(0)
-        raise NotImplementedError('Implementar _preprocess.')
+        """
+        Carga una imagen desde disco y la convierte en un array numpy listo
+        para ser consumido por el modelo.
+
+        Transformaciones aplicadas:
+          1. Abrir con PIL y convertir a RGB (descarta canal alfa si existe).
+          2. Redimensionar a 299×299 (tamaño esperado por el modelo).
+          3. Convertir a float32 y normalizar al rango [0, 1].
+          4. Agregar dimensión de batch → shape final (1, 299, 299, 3).
+
+        Returns:
+            numpy.ndarray de shape (1, 299, 299, 3) y dtype float32.
+        """
+        import numpy as np
+        from PIL import Image
+
+        img = Image.open(image_path).convert("RGB")
+        img = img.resize((299, 299), Image.LANCZOS)
+        arr = np.array(img, dtype=np.float32) / 255.0  # normalizar [0, 1]
+        return np.expand_dims(arr, axis=0)  # (1, 299, 299, 3)
 
     def _run_inference(self, tensor) -> list[float]:
-        # TODO: ejecutar inferencia y devolver lista de scores por categoría
-        # Ejemplo PyTorch:
-        #   import torch
-        #   with torch.no_grad():
-        #       output = self._model(tensor)
-        #       return torch.softmax(output, dim=1).squeeze().tolist()
-        raise NotImplementedError('Implementar _run_inference.')
+        """
+        Ejecuta la inferencia sobre el tensor preprocesado.
+
+        - Si el modelo Keras está cargado: pasa el tensor por la red y devuelve
+          las probabilidades softmax directamente del modelo.
+        - Si el backend es 'heuristic': delega a _heuristic_scores().
+
+        Returns:
+            Lista de float con una probabilidad por categoría (suma ≈ 1.0).
+            El orden coincide con CATEGORIES = ['saludable', 'antracnosis', 'pudricion'].
+        """
+        if self._model is _UNAVAILABLE:
+            logger.debug("Usando inferencia heurística (sin modelo ML).")
+            return self._heuristic_scores(tensor)
+
+        # Inferencia real con Keras
+        # model.predict devuelve un array de shape (batch, num_classes)
+        predictions = self._model.predict(tensor, verbose=0)
+        return [float(p) for p in predictions[0].tolist()]
+
+    # ------------------------------------------------------------------
+    # Heurística de respaldo (sin modelo ML)
+    # ------------------------------------------------------------------
+
+    def _heuristic_scores(self, tensor) -> list[float]:
+        """
+        Inferencia de respaldo basada en estadísticas de color de la imagen.
+        Se usa ÚNICAMENTE cuando Keras/TF no está disponible.
+
+        Lógica:
+          - Saludable    : dominancia del canal verde (G > R y G > B).
+          - Antracnosis  : señal marrón/amarillenta (R+G altos, B bajo).
+          - Pudrición    : alta desviación estándar + tonos oscuros.
+
+        Los scores crudos se normalizan con softmax para obtener probabilidades.
+
+        ADVERTENCIA: Esta heurística es puramente ilustrativa; no reemplaza al
+        modelo entrenado. Los resultados no deben usarse en producción.
+
+        Args:
+            tensor: numpy.ndarray de shape (1, 299, 299, 3), valores en [0, 1].
+
+        Returns:
+            Lista de 3 floats (probabilidades sumadas ≈ 1.0) en el orden
+            [saludable, antracnosis, pudricion].
+        """
+        import numpy as np
+
+        img = tensor[0]  # (299, 299, 3)
+
+        r_mean = float(np.mean(img[:, :, 0]))
+        g_mean = float(np.mean(img[:, :, 1]))
+        b_mean = float(np.mean(img[:, :, 2]))
+        std = float(np.std(img))
+
+        # Scores crudos (sin normalizar)
+        # saludable: dominancia del verde
+        score_saludable = g_mean * 1.5 - r_mean * 0.5 - b_mean * 0.3 + 0.1
+
+        # antracnosis: tono marrón/amarillo (R+G altos, B bajo)
+        score_antracnosis = (r_mean + g_mean) * 0.7 - b_mean * 0.5 - g_mean * 0.3 + 0.05
+
+        # pudricion: alta varianza + tonos oscuros
+        score_pudricion = (
+            std * 2.0 - g_mean * 0.5 + (1.0 - r_mean - g_mean - b_mean) * 0.3 + 0.05
+        )
+
+        raw = np.array(
+            [score_saludable, score_antracnosis, score_pudricion], dtype=np.float32
+        )
+
+        # Softmax estable numéricamente
+        exp = np.exp(raw - np.max(raw))
+        probs = exp / exp.sum()
+
+        return probs.tolist()
 
 
-# Instancia global (singleton)
+# Instancia global (singleton) — importar desde aquí en el resto del proyecto
 classifier = AvocadoClassifierService()
