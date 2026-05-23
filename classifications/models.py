@@ -5,7 +5,7 @@ from django.db import models
 class DiseaseCategory(models.TextChoices):
     SALUDABLE = "saludable", "Saludable"
     ANTRACNOSIS = "antracnosis", "Antracnosis"
-    PUDRICION = "pudricion", "Pudrición Radicular"
+    SARNA = "sarna", "Sarna"
 
 
 class ClassificationStatus(models.TextChoices):

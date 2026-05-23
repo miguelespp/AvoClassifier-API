@@ -34,7 +34,7 @@ User = get_user_model()
     description=(
         "Sube una imagen JPG/PNG y obtiene la clasificación de enfermedad.\n\n"
         "**Formato de la petición:** `multipart/form-data` con el campo `image`.\n\n"
-        "**Categorías posibles:** `saludable`, `antracnosis`, `pudricion`.\n\n"
+        "**Categorías posibles:** `saludable`, `antracnosis`, `sarna`.\n\n"
         "Si el procesamiento es lento, el cliente puede hacer polling a "
         "`GET /api/classifications/{id}/` usando el `id` devuelto."
     ),
@@ -106,8 +106,8 @@ class ClassificationListView(generics.ListAPIView):
         ),
         OpenApiParameter(
             "category", str,
-            description="Filtra por categoría: `saludable`, `antracnosis`, `pudricion`",
-            enum=["saludable", "antracnosis", "pudricion"],
+            description="Filtra por categoría: `saludable`, `antracnosis`, `sarna`",
+            enum=["saludable", "antracnosis", "sarna"],
         ),
         OpenApiParameter("user_id", int, description="Filtra por ID de usuario"),
         OpenApiParameter("search", str, description="Filtra por email del usuario"),

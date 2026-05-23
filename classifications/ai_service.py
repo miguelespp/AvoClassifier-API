@@ -10,9 +10,9 @@ Estrategia de carga:
      detectará el modelo cargado y usará _run_inference() real.
 
 Categorías (deben coincidir con DiseaseCategory en classifications/models.py):
-  - saludable   → fruto sin enfermedad visible
   - antracnosis → manchas oscuras/marrones por Colletotrichum
-  - pudricion   → podredumbre radicular (Phytophthora/Pythium)
+  - sarna       → roña/sarna del fruto
+  - saludable   → fruto sin enfermedad visible
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Debe coincidir EXACTAMENTE con los valores de DiseaseCategory en models.py
-CATEGORIES: list[str] = ["saludable", "antracnosis", "pudricion"]
+# Orden alfabético de carpetas de entrenamiento: antracnosis / sarna / saludable
+CATEGORIES: list[str] = ["antracnosis", "sarna", "saludable"]
 
 # Sentinel para indicar que el backend ML no pudo cargarse
 _UNAVAILABLE = "UNAVAILABLE"
@@ -230,7 +230,7 @@ class AvocadoClassifierService:
         Transformaciones aplicadas:
           1. Abrir con PIL y convertir a RGB (descarta canal alfa si existe).
           2. Redimensionar a 299×299 (tamaño esperado por el modelo).
-          3. Convertir a float32 y normalizar al rango [0, 1].
+          3. Convertir a float32 y aplicar preprocess_input de InceptionV3: [0,255] → [-1, 1].
           4. Agregar dimensión de batch → shape final (1, 299, 299, 3).
 
         Returns:
@@ -241,7 +241,8 @@ class AvocadoClassifierService:
 
         img = Image.open(image_path).convert("RGB")
         img = img.resize((299, 299), Image.LANCZOS)
-        arr = np.array(img, dtype=np.float32) / 255.0  # normalizar [0, 1]
+        arr = np.array(img, dtype=np.float32)
+        arr = arr / 127.5 - 1.0  # preprocess_input de InceptionV3: rango [-1, 1]
         return np.expand_dims(arr, axis=0)  # (1, 299, 299, 3)
 
     def _run_inference(self, tensor) -> list[float]:
@@ -254,7 +255,7 @@ class AvocadoClassifierService:
 
         Returns:
             Lista de float con una probabilidad por categoría (suma ≈ 1.0).
-            El orden coincide con CATEGORIES = ['saludable', 'antracnosis', 'pudricion'].
+            El orden coincide con CATEGORIES = ['antracnosis', 'sarna', 'saludable'].
         """
         if self._model is _UNAVAILABLE:
             logger.debug("Usando inferencia heurística (sin modelo ML).")
@@ -289,7 +290,7 @@ class AvocadoClassifierService:
 
         Returns:
             Lista de 3 floats (probabilidades sumadas ≈ 1.0) en el orden
-            [saludable, antracnosis, pudricion].
+            [antracnosis, sarna, saludable].
         """
         import numpy as np
 
@@ -300,20 +301,20 @@ class AvocadoClassifierService:
         b_mean = float(np.mean(img[:, :, 2]))
         std = float(np.std(img))
 
-        # Scores crudos (sin normalizar)
-        # saludable: dominancia del verde
-        score_saludable = g_mean * 1.5 - r_mean * 0.5 - b_mean * 0.3 + 0.1
-
+        # Scores crudos (sin normalizar) — orden debe coincidir con CATEGORIES
         # antracnosis: tono marrón/amarillo (R+G altos, B bajo)
         score_antracnosis = (r_mean + g_mean) * 0.7 - b_mean * 0.5 - g_mean * 0.3 + 0.05
 
-        # pudricion: alta varianza + tonos oscuros
-        score_pudricion = (
+        # sarna: alta varianza + tonos oscuros
+        score_sarna = (
             std * 2.0 - g_mean * 0.5 + (1.0 - r_mean - g_mean - b_mean) * 0.3 + 0.05
         )
 
+        # saludable: dominancia del verde
+        score_saludable = g_mean * 1.5 - r_mean * 0.5 - b_mean * 0.3 + 0.1
+
         raw = np.array(
-            [score_saludable, score_antracnosis, score_pudricion], dtype=np.float32
+            [score_antracnosis, score_sarna, score_saludable], dtype=np.float32
         )
 
         # Softmax estable numéricamente
