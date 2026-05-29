@@ -42,3 +42,4 @@ typing_extensions==4.15.0
 tzdata==2026.2
 urllib3==2.7.0
 wrapt==2.1.2
+huggingface-hub>=0.23.0
