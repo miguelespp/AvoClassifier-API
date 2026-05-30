@@ -163,27 +163,20 @@ class AvocadoClassifierService:
 
     def _predict_via_space(self, image_path: str) -> list[float]:
         """
-        Envía la imagen al HF Space como JSON base64 a /classify.
-        Usar JSON evita el bloqueo CSRF de Gradio en POST de form-data.
+        Llama al HF Space usando gradio_client.
+        La respuesta es un dict con 'label' y 'confidences'.
         """
-        import base64
-        import json as _json
-        import urllib.request
+        from gradio_client import Client, handle_file
 
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
-
-        payload = _json.dumps({"image": img_b64}).encode()
-        req = urllib.request.Request(
-            f"{HF_SPACE_URL.rstrip('/')}/classify",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+        client = Client(HF_SPACE_URL)
+        result = client.predict(
+            image=handle_file(image_path),
+            api_name="/_run",
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = _json.loads(resp.read())
-
-        raw = result.get("raw_scores", {})
-        return [raw.get(cat, 0.0) for cat in CATEGORIES]
+        # result: {"label": "saludable", "confidences": [{"label": ..., "confidence": ...}]}
+        confidences = result.get("confidences", [])
+        scores = {item["label"]: item["confidence"] for item in confidences}
+        return [scores.get(cat, 0.0) for cat in CATEGORIES]
 
     def _load_model(self):
         """
