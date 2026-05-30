@@ -163,36 +163,34 @@ class AvocadoClassifierService:
 
     def _predict_via_space(self, image_path: str) -> list[float]:
         """
-        Envía la imagen al HF Space y devuelve los scores de cada categoría.
-        El Space expone la API REST estándar de Gradio en /run/predict.
+        Envía la imagen al HF Space vía POST multipart a /classify
+        y devuelve los scores de cada categoría.
         """
-        import base64
+        import json as _json
         import urllib.request
 
-        import json as _json
-
+        boundary = b"----boundary"
         with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
+            img_data = f.read()
 
-        payload = _json.dumps(
-            {"data": [f"data:image/jpeg;base64,{img_b64}"]}
-        ).encode()
+        body = (
+            b"--" + boundary + b"\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="image.jpg"\r\n'
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + img_data + b"\r\n"
+            b"--" + boundary + b"--\r\n"
+        )
 
         req = urllib.request.Request(
-            f"{HF_SPACE_URL.rstrip('/')}/run/predict",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+            f"{HF_SPACE_URL.rstrip('/')}/classify",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = _json.loads(resp.read())
 
-        # Respuesta Gradio Label: {"data": [{"label": "saludable", "confidences": [...]}]}
-        confidences = result["data"][0]["confidences"]
-        scores = [0.0] * len(CATEGORIES)
-        for item in confidences:
-            if item["label"] in CATEGORIES:
-                scores[CATEGORIES.index(item["label"])] = item["confidence"]
-        return scores
+        raw = result.get("raw_scores", {})
+        return [raw.get(cat, 0.0) for cat in CATEGORIES]
 
     def _load_model(self):
         """
