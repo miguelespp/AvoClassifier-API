@@ -31,6 +31,8 @@ services:
         value: "0"
       - key: HF_MODEL_REPO
         value: "cmep121/avoclassifier"
+      - key: HF_SPACE_URL
+        value: "https://cmep121-avoclassifier-space.hf.space"
       - key: HF_TOKEN
         sync: false
     disk:

@@ -25,6 +25,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 HF_MODEL_REPO = os.environ.get("HF_MODEL_REPO", "")  # e.g. "cmep121/avoclassifier"
+HF_SPACE_URL = os.environ.get("HF_SPACE_URL", "")   # e.g. "https://cmep121-avoclassifier-space.hf.space"
 _LFS_POINTER_MAX_BYTES = 512  # punteros LFS nunca superan este tamaño
 
 # Orden alfabético de carpetas de entrenamiento: antracnosis / sarna / saludable
@@ -130,20 +131,22 @@ class AvocadoClassifierService:
         """
         Clasifica una imagen y devuelve el resultado.
 
+        Si HF_SPACE_URL está configurado, delega la inferencia al HF Space
+        (no requiere TensorFlow local). De lo contrario usa el modelo local.
+
         Args:
             image_path: Ruta absoluta (o relativa al CWD) al archivo de imagen.
 
         Returns:
             ClassificationResult con la categoría predicha, confianza y scores crudos.
-
-        Raises:
-            RuntimeError: Si load() aún no fue llamado.
         """
-        if self._model is None:
-            self.load()  # carga diferida: primer predict activa la carga
-
-        tensor = self._preprocess(image_path)
-        scores = self._run_inference(tensor)
+        if HF_SPACE_URL:
+            scores = self._predict_via_space(image_path)
+        else:
+            if self._model is None:
+                self.load()
+            tensor = self._preprocess(image_path)
+            scores = self._run_inference(tensor)
 
         predicted_idx = scores.index(max(scores))
         raw_scores = dict(zip(CATEGORIES, scores))
@@ -157,6 +160,39 @@ class AvocadoClassifierService:
     # ------------------------------------------------------------------
     # Implementaciones internas
     # ------------------------------------------------------------------
+
+    def _predict_via_space(self, image_path: str) -> list[float]:
+        """
+        Envía la imagen al HF Space y devuelve los scores de cada categoría.
+        El Space expone la API REST estándar de Gradio en /run/predict.
+        """
+        import base64
+        import urllib.request
+
+        import json as _json
+
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode()
+
+        payload = _json.dumps(
+            {"data": [f"data:image/jpeg;base64,{img_b64}"]}
+        ).encode()
+
+        req = urllib.request.Request(
+            f"{HF_SPACE_URL.rstrip('/')}/run/predict",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = _json.loads(resp.read())
+
+        # Respuesta Gradio Label: {"data": [{"label": "saludable", "confidences": [...]}]}
+        confidences = result["data"][0]["confidences"]
+        scores = [0.0] * len(CATEGORIES)
+        for item in confidences:
+            if item["label"] in CATEGORIES:
+                scores[CATEGORIES.index(item["label"])] = item["confidence"]
+        return scores
 
     def _load_model(self):
         """

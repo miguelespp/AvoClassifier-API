@@ -1,0 +1,6 @@
+keras==3.14.1
+tensorflow==2.21.0
+huggingface-hub>=0.23.0
+pillow
+numpy
+gradio
