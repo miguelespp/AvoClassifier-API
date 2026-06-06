@@ -52,6 +52,47 @@ class LoginView(TokenObtainPairView):
     permission_classes = (AllowAny,)
 
 
+@extend_schema(
+    tags=["auth"],
+    summary="Cambiar contraseña",
+    description="Permite al usuario autenticado cambiar su propia contraseña. Requiere la contraseña actual.",
+    request=inline_serializer(
+        name="UserChangePasswordRequest",
+        fields={
+            "current_password": serializers.CharField(),
+            "new_password": serializers.CharField(min_length=8),
+        },
+    ),
+    responses={
+        200: inline_serializer(
+            name="UserChangePasswordResponse",
+            fields={"detail": serializers.CharField()},
+        ),
+        400: OpenApiResponse(description="Contraseña actual incorrecta o nueva contraseña muy corta"),
+    },
+)
+class ChangePasswordView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        current_password = request.data.get("current_password", "")
+        new_password = request.data.get("new_password", "")
+
+        if not request.user.check_password(current_password):
+            return Response(
+                {"detail": "La contraseña actual es incorrecta."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(new_password) < 8:
+            return Response(
+                {"detail": "La nueva contraseña debe tener al menos 8 caracteres."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        request.user.set_password(new_password)
+        request.user.save()
+        return Response({"detail": "Contraseña actualizada correctamente."})
+
+
 @extend_schema(tags=["auth"])
 class ProfileView(APIView):
     permission_classes = (IsAuthenticated,)
