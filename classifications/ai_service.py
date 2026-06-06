@@ -18,10 +18,15 @@ Categorías (deben coincidir con DiseaseCategory en classifications/models.py):
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+HF_MODEL_REPO = os.environ.get("HF_MODEL_REPO", "")  # e.g. "cmep121/avoclassifier"
+HF_SPACE_URL = os.environ.get("HF_SPACE_URL", "")   # e.g. "https://cmep121-avoclassifier-space.hf.space"
+_LFS_POINTER_MAX_BYTES = 512  # punteros LFS nunca superan este tamaño
 
 # Orden alfabético de carpetas de entrenamiento: antracnosis / sarna / saludable
 CATEGORIES: list[str] = ["antracnosis", "sarna", "saludable"]
@@ -126,20 +131,22 @@ class AvocadoClassifierService:
         """
         Clasifica una imagen y devuelve el resultado.
 
+        Si HF_SPACE_URL está configurado, delega la inferencia al HF Space
+        (no requiere TensorFlow local). De lo contrario usa el modelo local.
+
         Args:
             image_path: Ruta absoluta (o relativa al CWD) al archivo de imagen.
 
         Returns:
             ClassificationResult con la categoría predicha, confianza y scores crudos.
-
-        Raises:
-            RuntimeError: Si load() aún no fue llamado.
         """
-        if self._model is None:
-            self.load()  # carga diferida: primer predict activa la carga
-
-        tensor = self._preprocess(image_path)
-        scores = self._run_inference(tensor)
+        if HF_SPACE_URL:
+            scores = self._predict_via_space(image_path)
+        else:
+            if self._model is None:
+                self.load()
+            tensor = self._preprocess(image_path)
+            scores = self._run_inference(tensor)
 
         predicted_idx = scores.index(max(scores))
         raw_scores = dict(zip(CATEGORIES, scores))
@@ -154,6 +161,23 @@ class AvocadoClassifierService:
     # Implementaciones internas
     # ------------------------------------------------------------------
 
+    def _predict_via_space(self, image_path: str) -> list[float]:
+        """
+        Llama al HF Space usando gradio_client.
+        La respuesta es un dict con 'label' y 'confidences'.
+        """
+        from gradio_client import Client, handle_file
+
+        client = Client(HF_SPACE_URL)
+        result = client.predict(
+            image=handle_file(image_path),
+            api_name="/_run",
+        )
+        # result: {"label": "saludable", "confidences": [{"label": ..., "confidence": ...}]}
+        confidences = result.get("confidences", [])
+        scores = {item["label"]: item["confidence"] for item in confidences}
+        return [scores.get(cat, 0.0) for cat in CATEGORIES]
+
     def _load_model(self):
         """
         Carga el modelo Keras 3.x en formato directorio (config.json + model.weights.h5).
@@ -161,6 +185,8 @@ class AvocadoClassifierService:
         Búsqueda del modelo en settings.AI_MODEL_DIR:
           1. Si el directorio contiene directamente config.json → lo carga.
           2. Si no, busca el primer subdirectorio *.keras y lo carga.
+          3. Si el archivo de pesos es un puntero LFS o no existe, lo descarga
+             desde Hugging Face Hub (requiere variable de entorno HF_MODEL_REPO).
 
         Se usa deserialize_keras_object + load_weights en lugar de
         keras.saving.load_model porque éste último falla en Windows cuando
@@ -175,6 +201,7 @@ class AvocadoClassifierService:
 
             base = pathlib.Path(settings.AI_MODEL_DIR)
             model_dir = self._resolve_model_dir(base)
+            self._ensure_weights_downloaded(model_dir)
             logger.info("Cargando modelo desde: %s", model_dir)
 
             config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
@@ -198,6 +225,42 @@ class AvocadoClassifierService:
                 exc_info=True,
             )
             return _UNAVAILABLE
+
+    @staticmethod
+    def _ensure_weights_downloaded(model_dir) -> None:
+        """
+        Si model.weights.h5 es un puntero LFS (< 512 bytes) o no existe,
+        lo descarga desde Hugging Face Hub usando HF_MODEL_REPO.
+        No hace nada si el archivo ya es válido o si HF_MODEL_REPO no está configurado.
+        """
+        import pathlib
+
+        weights_path = pathlib.Path(model_dir) / "model.weights.h5"
+        is_pointer = (
+            not weights_path.exists()
+            or weights_path.stat().st_size < _LFS_POINTER_MAX_BYTES
+        )
+        if not is_pointer:
+            return
+
+        if not HF_MODEL_REPO:
+            logger.warning(
+                "model.weights.h5 parece un puntero LFS pero HF_MODEL_REPO no está configurado."
+            )
+            return
+
+        try:
+            from huggingface_hub import hf_hub_download
+
+            logger.info("Descargando model.weights.h5 desde Hugging Face Hub (%s)…", HF_MODEL_REPO)
+            downloaded = hf_hub_download(
+                repo_id=HF_MODEL_REPO,
+                filename="model.weights.h5",
+                local_dir=str(model_dir),
+            )
+            logger.info("Modelo descargado en: %s", downloaded)
+        except Exception as exc:
+            logger.error("Error descargando modelo desde HF Hub: %s", exc)
 
     @staticmethod
     def _resolve_model_dir(base):

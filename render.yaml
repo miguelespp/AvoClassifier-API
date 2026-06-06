@@ -29,6 +29,12 @@ services:
         value: "2"
       - key: TF_ENABLE_ONEDNN_OPTS
         value: "0"
+      - key: HF_MODEL_REPO
+        value: "cmep121/avoclassifier"
+      - key: HF_SPACE_URL
+        value: "cmep121/avoclassifier-space"
+      - key: HF_TOKEN
+        sync: false
     disk:
       name: avoclassifier-data
       mountPath: /opt/render/project/src/media
