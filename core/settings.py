@@ -138,6 +138,7 @@ if os.environ.get("USE_GCS") == "true":
         "project_id": os.environ.get("GS_PROJECT_ID"),
         "default_acl": None,            # objetos privados (uniform bucket-level access)
         "querystring_auth": True,       # image.url devuelve una signed URL
+        "file_overwrite": False,        # nombres en colisión → sufijo único (no pisar archivos)
         "expiration": timedelta(
             seconds=int(os.environ.get("GS_EXPIRATION", "3600"))
         ),
