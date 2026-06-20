@@ -131,6 +131,11 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Credenciales / secretos (NUNCA commitear)
+*serviceAccount*.json
+*-firebase*.json
+avo-classifier-firebase.json
+
 # Environments
 .env
 .venv

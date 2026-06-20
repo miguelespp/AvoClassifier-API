@@ -109,14 +109,59 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # ── Archivos de media (imágenes subidas) ──────────────────────────────────────
-# En Render: montar un disco persistente en /opt/render/project/src/media
-# y asegurarse de que MEDIA_ROOT apunte a esa ruta.
+# Local (DEBUG / sin GCS): se sirven vía core/urls.py.
+# Render con disco local: montar un disco persistente y apuntar MEDIA_ROOT ahí.
 
 MEDIA_URL = "media/"
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", str(BASE_DIR / "media")))
+
+# ── Backends de almacenamiento ────────────────────────────────────────────────
+# Por defecto: filesystem local para media + WhiteNoise para estáticos.
+# Si USE_GCS=true, las imágenes de clasificación se guardan en Firebase Storage
+# (el bucket de Google Cloud Storage del proyecto Firebase) con URLs firmadas
+# privadas — cada imagen sólo es accesible vía una signed URL temporal.
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+if os.environ.get("USE_GCS") == "true":
+    _gcs_options = {
+        "bucket_name": os.environ["GS_BUCKET_NAME"],   # ej: avo-classifier.firebasestorage.app
+        "project_id": os.environ.get("GS_PROJECT_ID"),
+        "default_acl": None,            # objetos privados (uniform bucket-level access)
+        "querystring_auth": True,       # image.url devuelve una signed URL
+        "expiration": timedelta(
+            seconds=int(os.environ.get("GS_EXPIRATION", "3600"))
+        ),
+    }
+
+    # Credenciales de la service account (Firebase Console → Configuración →
+    # Cuentas de servicio → Generar nueva clave privada). Dos formas:
+    #   1. GS_CREDENTIALS_JSON  → el contenido JSON completo (cómodo en Render).
+    #   2. GOOGLE_APPLICATION_CREDENTIALS → ruta a un archivo .json (dev local).
+    # Si no se define ninguna, google-auth usa las credenciales por defecto.
+    _gcs_creds_json = os.environ.get("GS_CREDENTIALS_JSON")
+    if _gcs_creds_json:
+        import json
+
+        from google.oauth2 import service_account
+
+        _gcs_options["credentials"] = service_account.Credentials.from_service_account_info(
+            json.loads(_gcs_creds_json)
+        )
+
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
+        "OPTIONS": _gcs_options,
+    }
 
 # ── Modelo de usuario ─────────────────────────────────────────────────────────
 
