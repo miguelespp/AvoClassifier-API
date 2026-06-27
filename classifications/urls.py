@@ -7,13 +7,17 @@ from .views import (
     AdminModelReloadView,
     ClassificationCreateView,
     ClassificationDetailView,
+    ClassificationExportCSVView,
     ClassificationListView,
+    UserStatsView,
 )
 
 urlpatterns = [
     # User endpoints
     path("", ClassificationCreateView.as_view(), name="classification_create"),
     path("history/", ClassificationListView.as_view(), name="classification_list"),
+    path("stats/", UserStatsView.as_view(), name="user_stats"),
+    path("history/export/", ClassificationExportCSVView.as_view(), name="classification_export_csv"),
     path("<int:pk>/", ClassificationDetailView.as_view(), name="classification_detail"),
     # Admin endpoints
     path(

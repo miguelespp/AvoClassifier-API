@@ -2,9 +2,18 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, extend_schema_view, inline_serializer
 from rest_framework import generics, serializers, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+
+class AdminPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .permissions import IsAdminOrStaff
@@ -93,6 +102,43 @@ class ChangePasswordView(APIView):
         return Response({"detail": "Contraseña actualizada correctamente."})
 
 
+@extend_schema(
+    tags=["auth"],
+    summary="Cerrar sesión",
+    description="Invalida el refresh token enviado. El access token expirará naturalmente.",
+    request=inline_serializer(
+        name="LogoutRequest",
+        fields={"refresh": serializers.CharField()},
+    ),
+    responses={
+        200: inline_serializer(
+            name="LogoutResponse",
+            fields={"detail": serializers.CharField()},
+        ),
+        400: OpenApiResponse(description="Token inválido o ya expirado"),
+    },
+)
+class LogoutView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+        if not refresh_token:
+            return Response(
+                {"detail": "El campo 'refresh' es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+        except TokenError:
+            return Response(
+                {"detail": "Token inválido o ya expirado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"detail": "Sesión cerrada correctamente."})
+
+
 @extend_schema(tags=["auth"])
 class ProfileView(APIView):
     permission_classes = (IsAuthenticated,)
@@ -145,6 +191,7 @@ class ProfileView(APIView):
 )
 class AdminUserListView(generics.ListCreateAPIView):
     permission_classes = (IsAdminOrStaff,)
+    pagination_class = AdminPagination
 
     def get_serializer_class(self):
         if self.request.method == "POST":

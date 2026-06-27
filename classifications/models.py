@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class DiseaseCategory(models.TextChoices):
@@ -13,6 +14,17 @@ class ClassificationStatus(models.TextChoices):
     PROCESSING = "processing", "Procesando"
     COMPLETED = "completed", "Completado"
     FAILED = "failed", "Fallido"
+
+
+class ClassificationManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+    def with_deleted(self):
+        return super().get_queryset()
+
+    def deleted(self):
+        return super().get_queryset().filter(deleted_at__isnull=False)
 
 
 class Classification(models.Model):
@@ -34,16 +46,25 @@ class Classification(models.Model):
         choices=DiseaseCategory.choices,
         blank=True,
     )
-    confidence = models.FloatField(null=True, blank=True)  # 0.0 - 1.0
-    # Scores por categoría tal como los devuelve el modelo
+    confidence = models.FloatField(null=True, blank=True)
     raw_scores = models.JSONField(null=True, blank=True)
 
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     classified_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # Webhook para notificación async (opcional)
+    webhook_url = models.URLField(blank=True)
+
+    objects = ClassificationManager()
 
     class Meta:
         ordering = ["-created_at"]
 
     def __str__(self):
         return f"Classification {self.pk} - {self.user.email} [{self.status}]"
+
+    def soft_delete(self):
+        self.deleted_at = timezone.now()
+        self.save(update_fields=["deleted_at"])
