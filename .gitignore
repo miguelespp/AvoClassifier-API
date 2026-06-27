@@ -1,6 +1,9 @@
 # Created by https://www.toptal.com/developers/gitignore/api/django,python
 # Edit at https://www.toptal.com/developers/gitignore?templates=django,python
 
+node_modules/
+unpacked_check/
+
 ### Django ###
 *.log
 *.pot
