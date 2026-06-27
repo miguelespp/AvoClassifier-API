@@ -1,18 +1,32 @@
+import csv
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.db.models import Avg, Count
+from django.http import StreamingHttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, extend_schema_view, inline_serializer
 from rest_framework import generics, serializers, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
+
+
+class ClassificationThrottle(UserRateThrottle):
+    scope = "classification"
+
+
+class AdminPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 from users.permissions import IsAdminOrStaff
 
 from .ai_service import classifier
-from .models import Classification, ClassificationStatus, DiseaseCategory  # noqa: F401
+from .models import Classification, ClassificationStatus, DiseaseCategory
 from .serializers import (
     AdminClassificationSerializer,
     ClassificationCreateSerializer,
@@ -43,6 +57,7 @@ User = get_user_model()
 )
 class ClassificationCreateView(generics.CreateAPIView):
     permission_classes = (IsAuthenticated,)
+    throttle_classes = (ClassificationThrottle,)
     serializer_class = ClassificationCreateSerializer
 
     def create(self, request, *args, **kwargs):
@@ -90,6 +105,104 @@ class ClassificationListView(generics.ListAPIView):
 
 
 # ---------------------------------------------------------------------------
+# CSV export
+# ---------------------------------------------------------------------------
+
+
+class _EchoBuffer:
+    def write(self, value):
+        return value
+
+
+@extend_schema(
+    tags=["classifications"],
+    summary="Exportar historial en CSV",
+    description="Descarga todas las clasificaciones del usuario autenticado como archivo CSV.",
+    responses={200: None},
+)
+class ClassificationExportCSVView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        qs = (
+            Classification.objects.filter(user=request.user)
+            .order_by("-created_at")
+            .values_list(
+                "id", "status", "predicted_category", "confidence",
+                "error_message", "created_at", "classified_at",
+            )
+        )
+
+        header = ["id", "status", "predicted_category", "confidence",
+                  "error_message", "created_at", "classified_at"]
+
+        def rows():
+            writer = csv.writer(_EchoBuffer())
+            yield writer.writerow(header)
+            for row in qs:
+                yield writer.writerow(row)
+
+        response = StreamingHttpResponse(rows(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="clasificaciones.csv"'
+        return response
+
+
+# ---------------------------------------------------------------------------
+# User stats view
+# ---------------------------------------------------------------------------
+
+
+@extend_schema(
+    tags=["classifications"],
+    summary="Estadísticas propias del usuario",
+    description="Devuelve un resumen de las clasificaciones del usuario autenticado.",
+    responses={
+        200: inline_serializer(
+            name="UserStats",
+            fields={
+                "total": serializers.IntegerField(),
+                "by_status": serializers.DictField(),
+                "by_category": serializers.DictField(),
+                "average_confidence": serializers.FloatField(allow_null=True),
+                "recent_7_days": serializers.IntegerField(),
+            },
+        )
+    },
+)
+class UserStatsView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        qs = Classification.objects.filter(user=request.user)
+
+        by_status = dict(
+            qs.values("status").annotate(count=Count("id")).values_list("status", "count")
+        )
+        by_category = dict(
+            qs.filter(status=ClassificationStatus.COMPLETED)
+            .values("predicted_category")
+            .annotate(count=Count("id"))
+            .values_list("predicted_category", "count")
+        )
+        avg_confidence = qs.filter(
+            status=ClassificationStatus.COMPLETED, confidence__isnull=False
+        ).aggregate(avg=Avg("confidence"))["avg"]
+
+        seven_days_ago = timezone.now() - timedelta(days=7)
+        recent = qs.filter(created_at__gte=seven_days_ago).count()
+
+        return Response(
+            {
+                "total": qs.count(),
+                "by_status": by_status,
+                "by_category": by_category,
+                "average_confidence": round(avg_confidence, 4) if avg_confidence else None,
+                "recent_7_days": recent,
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
 # Admin views — require is_staff or is_superuser
 # ---------------------------------------------------------------------------
 
@@ -111,15 +224,19 @@ class ClassificationListView(generics.ListAPIView):
         ),
         OpenApiParameter("user_id", int, description="Filtra por ID de usuario"),
         OpenApiParameter("search", str, description="Filtra por email del usuario"),
+        OpenApiParameter("include_deleted", bool, description="Incluir registros eliminados (soft delete)"),
     ],
     responses={200: AdminClassificationSerializer(many=True)},
 )
 class AdminClassificationListView(generics.ListAPIView):
     permission_classes = (IsAdminOrStaff,)
     serializer_class = AdminClassificationSerializer
+    pagination_class = AdminPagination
 
     def get_queryset(self):
-        qs = Classification.objects.select_related("user").order_by("-created_at")
+        include_deleted = self.request.query_params.get("include_deleted", "").lower() == "true"
+        base_manager = Classification.objects.with_deleted() if include_deleted else Classification.objects
+        qs = base_manager.select_related("user").order_by("-created_at")
 
         status_filter = self.request.query_params.get("status")
         category = self.request.query_params.get("category")
@@ -142,14 +259,17 @@ class AdminClassificationListView(generics.ListAPIView):
 @extend_schema_view(
     get=extend_schema(summary="Detalle de clasificación (admin)"),
     delete=extend_schema(
-        summary="Eliminar clasificación",
-        responses={204: OpenApiResponse(description="Clasificación eliminada")},
+        summary="Eliminar clasificación (soft delete)",
+        responses={204: OpenApiResponse(description="Clasificación marcada como eliminada")},
     ),
 )
 class AdminClassificationDetailView(generics.RetrieveDestroyAPIView):
     permission_classes = (IsAdminOrStaff,)
     serializer_class = AdminClassificationSerializer
-    queryset = Classification.objects.select_related("user").all()
+    queryset = Classification.objects.with_deleted().select_related("user").all()
+
+    def perform_destroy(self, instance):
+        instance.soft_delete()
 
 
 @extend_schema(
