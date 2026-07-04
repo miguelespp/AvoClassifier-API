@@ -51,10 +51,11 @@ class ImageValidationTests(APITestCase):
         login = self.client.post(LOGIN_URL, {"email": "user@example.com", "password": "testpass123"})
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {login.data["access"]}')
 
-    def test_upload_valid_jpeg(self):
+    @patch("classifications.views.classify_image_task.delay")
+    def test_upload_valid_jpeg(self, mock_task):
         res = self.client.post(CREATE_URL, {"image": _fake_jpeg()}, format="multipart")
-        # 201 o 500 si el modelo falla — lo importante es que pasa validación
-        self.assertNotEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.status_code, status.HTTP_202_ACCEPTED)
+        mock_task.assert_called_once()
 
     def test_upload_corrupt_file_rejected(self):
         res = self.client.post(CREATE_URL, {"image": _fake_text_as_jpg()}, format="multipart")

@@ -33,6 +33,7 @@ from .serializers import (
     ClassificationResultSerializer,
 )
 from .services import run_classification
+from .tasks import classify_image_task
 
 User = get_user_model()
 
@@ -46,14 +47,15 @@ User = get_user_model()
     tags=["classifications"],
     summary="Clasificar imagen de aguacate",
     description=(
-        "Sube una imagen JPG/PNG y obtiene la clasificación de enfermedad.\n\n"
+        "Sube una imagen JPG/PNG y encola la clasificación de enfermedad.\n\n"
         "**Formato de la petición:** `multipart/form-data` con el campo `image`.\n\n"
         "**Categorías posibles:** `saludable`, `antracnosis`, `sarna`.\n\n"
-        "Si el procesamiento es lento, el cliente puede hacer polling a "
-        "`GET /api/classifications/{id}/` usando el `id` devuelto."
+        "Devuelve **202 Accepted** inmediatamente con `status: pending`. "
+        "Haz polling a `GET /api/classifications/{id}/` hasta que `status` "
+        "sea `completed` o `failed`."
     ),
     request={"multipart/form-data": ClassificationCreateSerializer},
-    responses={201: ClassificationResultSerializer},
+    responses={202: ClassificationResultSerializer},
 )
 class ClassificationCreateView(generics.CreateAPIView):
     permission_classes = (IsAuthenticated,)
@@ -64,15 +66,10 @@ class ClassificationCreateView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         classification = serializer.save()
-
-        # Ejecutar clasificación de forma síncrona
-        # TODO: reemplazar por tarea Celery si el modelo es lento:
-        #   classify_image_task.delay(classification.pk)
-        classification = run_classification(classification.pk)
-
+        classify_image_task.delay(classification.pk)
         return Response(
             ClassificationResultSerializer(classification).data,
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_202_ACCEPTED,
         )
 
 
