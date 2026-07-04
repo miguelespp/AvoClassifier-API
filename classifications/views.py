@@ -1,7 +1,10 @@
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+
+_executor = ThreadPoolExecutor(max_workers=4)
 from django.db.models import Avg, Count
 from django.http import StreamingHttpResponse
 from django.utils import timezone
@@ -33,7 +36,6 @@ from .serializers import (
     ClassificationResultSerializer,
 )
 from .services import run_classification
-from .tasks import classify_image_task
 
 User = get_user_model()
 
@@ -66,7 +68,7 @@ class ClassificationCreateView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         classification = serializer.save()
-        classify_image_task.delay(classification.pk)
+        _executor.submit(run_classification, classification.pk)
         return Response(
             ClassificationResultSerializer(classification).data,
             status=status.HTTP_202_ACCEPTED,

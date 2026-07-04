@@ -238,15 +238,3 @@ SPECTACULAR_SETTINGS = {
 # En Render con disco persistente: AI_MODEL_DIR=/opt/render/project/src/models
 
 AI_MODEL_DIR = Path(os.environ.get("AI_MODEL_DIR", str(BASE_DIR / "models")))
-
-# ── Celery ────────────────────────────────────────────────────────────────────
-# Broker: Redis local en desarrollo. En producción pasa CELERY_BROKER_URL como
-# variable de entorno (ej: redis://:password@host:6379/0).
-
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_TRACK_STARTED = True

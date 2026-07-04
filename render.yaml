@@ -1,5 +1,4 @@
 services:
-  # ── Web API ────────────────────────────────────────────────────────────────
   - type: web
     name: avoclassifier-api
     runtime: python
@@ -18,16 +17,6 @@ services:
       - key: DATABASE_URL
         fromDatabase:
           name: avoclassifier-db
-          property: connectionString
-      - key: CELERY_BROKER_URL
-        fromService:
-          name: avoclassifier-redis
-          type: redis
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          name: avoclassifier-redis
-          type: redis
           property: connectionString
       - key: MEDIA_ROOT
         value: /opt/render/project/src/media
@@ -49,53 +38,6 @@ services:
       name: avoclassifier-data
       mountPath: /opt/render/project/src/media
       sizeGB: 1
-
-  # ── Celery Worker ──────────────────────────────────────────────────────────
-  # Procesa las tareas de clasificación en segundo plano.
-  # Requiere USE_GCS=true para acceder a las imágenes subidas (el disco del
-  # servicio web no es compartido con el worker).
-  - type: worker
-    name: avoclassifier-worker
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A core worker --loglevel=info --concurrency=2
-    envVars:
-      - key: SECRET_KEY
-        fromService:
-          name: avoclassifier-api
-          type: web
-          envVarKey: SECRET_KEY
-      - key: DATABASE_URL
-        fromDatabase:
-          name: avoclassifier-db
-          property: connectionString
-      - key: CELERY_BROKER_URL
-        fromService:
-          name: avoclassifier-redis
-          type: redis
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          name: avoclassifier-redis
-          type: redis
-          property: connectionString
-      - key: HF_SPACE_URL
-        value: "cmep121/avoclassifier-space"
-      - key: HF_TOKEN
-        sync: false
-      - key: USE_GCS
-        sync: false
-      - key: GS_BUCKET_NAME
-        sync: false
-      - key: GS_CREDENTIALS_JSON
-        sync: false
-
-  # ── Redis ──────────────────────────────────────────────────────────────────
-  - type: redis
-    name: avoclassifier-redis
-    plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList: []
 
 databases:
   - name: avoclassifier-db
