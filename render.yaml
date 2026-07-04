@@ -95,6 +95,7 @@ services:
     name: avoclassifier-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
 databases:
   - name: avoclassifier-db
