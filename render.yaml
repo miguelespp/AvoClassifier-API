@@ -3,7 +3,6 @@ services:
   - type: web
     name: avoclassifier-api
     runtime: python
-    pythonVersion: "3.11"
     buildCommand: >
       pip install -r requirements.txt &&
       python manage.py collectstatic --noinput &&
@@ -58,7 +57,6 @@ services:
   - type: worker
     name: avoclassifier-worker
     runtime: python
-    pythonVersion: "3.11"
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A core worker --loglevel=info --concurrency=2
     envVars:
