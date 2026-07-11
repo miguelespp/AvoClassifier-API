@@ -2,15 +2,23 @@
 Script de pruebas para AvoClassifier API desplegada en Render.
 
 Uso:
-    python test/test_api.py                          # modo interactivo
+    python test/test_api.py                          # modo interactivo (Render por defecto)
     python test/test_api.py --email X --password Y  # con credenciales
     python test/test_api.py --register               # registrar nuevo usuario de prueba
 
+    # Contra el servidor local (python manage.py runserver):
+    python test/test_api.py --base-url http://127.0.0.1:8000 --email X --password Y
+
 Variables de entorno alternativas:
     AVO_EMAIL, AVO_PASSWORD, AVO_BASE_URL
+
+Cubre el flujo completo que consume el frontend: health, registro, login,
+perfil, clasificación async (202 + polling), historial, export CSV, stats
+admin, refresh de token y casos negativos (401/400/credenciales inválidas).
 """
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -81,7 +89,13 @@ def test_health():
 def test_register(email, password, first_name="Test", last_name="User"):
     """Registra un nuevo usuario. Devuelve True si tuvo éxito o el usuario ya existe."""
     header("2. Registro de usuario")
-    payload = {"email": email, "password": password, "first_name": first_name, "last_name": last_name}
+    payload = {
+        "email": email,
+        "password": password,
+        "password2": password,  # el serializer exige confirmación de contraseña
+        "first_name": first_name,
+        "last_name": last_name,
+    }
     resp = requests.post(f"{BASE_URL}/api/auth/register/", json=payload, timeout=30)
 
     if resp.status_code == 201:
@@ -130,8 +144,13 @@ def test_profile(token):
 
 
 def test_classify(token):
-    """Sube avotest.jpeg y clasifica. Devuelve el ID de clasificación."""
-    header("5. Clasificación de imagen")
+    """Sube avotest.jpeg y encola la clasificación. Devuelve el ID de clasificación.
+
+    La API es asíncrona: responde 202 Accepted con `status: pending` de inmediato
+    y procesa la inferencia en segundo plano. El resultado se obtiene por polling
+    (ver test_poll_result).
+    """
+    header("5. Clasificación de imagen (encolado async)")
 
     if not TEST_IMAGE.exists():
         fail(f"Imagen no encontrada: {TEST_IMAGE}")
@@ -148,23 +167,14 @@ def test_classify(token):
             timeout=120,
         )
 
-    if not check_response(resp, 201, "POST /api/classifications/"):
+    # La API devuelve 202 Accepted (procesamiento async vía thread pool executor).
+    if not check_response(resp, 202, "POST /api/classifications/"):
         return None
 
     data = resp.json()
     clf_id = data.get("id")
     info(f"ID          : {clf_id}")
-    info(f"Status      : {data.get('status')}")
-    info(f"Categoría   : {data.get('predicted_category_display', data.get('predicted_category'))}")
-    info(f"Confianza   : {data.get('confidence', 0) * 100:.2f}%")
-
-    raw = data.get("raw_scores") or {}
-    if raw:
-        info("Raw scores  :")
-        for cat, score in sorted(raw.items(), key=lambda x: x[1], reverse=True):
-            bar = "█" * int(score * 30)
-            print(f"    {cat:<14} {score * 100:5.2f}%  {bar}")
-
+    info(f"Status      : {data.get('status')} (se resolverá por polling)")
     return clf_id
 
 
@@ -225,9 +235,38 @@ def test_history(token):
     return True
 
 
+def test_export_csv(token):
+    """Descarga el historial como CSV (endpoint que consume el botón 'Exportar' del frontend)."""
+    header("8. Export CSV")
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(
+        f"{BASE_URL}/api/classifications/history/export/", headers=headers, timeout=30
+    )
+
+    if not check_response(resp, 200, "GET /api/classifications/history/export/"):
+        return False
+
+    ctype = resp.headers.get("Content-Type", "")
+    disp = resp.headers.get("Content-Disposition", "")
+    if "text/csv" not in ctype:
+        fail(f"Content-Type inesperado: {ctype!r} (se esperaba text/csv)")
+        return False
+    ok(f"Content-Type: {ctype}")
+    if "clasificaciones.csv" in disp:
+        ok(f"Content-Disposition: {disp}")
+    else:
+        warn(f"Content-Disposition sin nombre de archivo esperado: {disp!r}")
+
+    lineas = resp.text.splitlines()
+    info(f"Filas en el CSV (incluye cabecera): {len(lineas)}")
+    if lineas:
+        info(f"Cabecera: {lineas[0]}")
+    return True
+
+
 def test_admin_stats(token):
     """Comprueba el backend del modelo (sólo accesible para staff/admin)."""
-    header("8. Stats del modelo (admin)")
+    header("9. Stats del modelo (admin)")
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(f"{BASE_URL}/api/classifications/admin/stats/", headers=headers, timeout=30)
 
@@ -257,7 +296,7 @@ def test_admin_stats(token):
 
 def test_token_refresh(token):
     """Prueba el endpoint de refresh (requiere el refresh token, que no guardamos aquí)."""
-    header("9. Token refresh (smoke test)")
+    header("10. Token refresh (smoke test)")
     # Solo verificamos que el endpoint existe y rechaza un token inválido
     resp = requests.post(
         f"{BASE_URL}/api/auth/token/refresh/",
@@ -271,9 +310,69 @@ def test_token_refresh(token):
     return False
 
 
+# ─── Casos negativos (el frontend debe manejar estos errores con gracia) ──────
+
+def test_login_invalid_credentials():
+    """Login con credenciales incorrectas debe devolver 401 (no 500 ni 200)."""
+    header("11. Login con credenciales inválidas")
+    resp = requests.post(
+        f"{BASE_URL}/api/auth/login/",
+        json={"email": "no-existe@example.com", "password": "credencial-incorrecta"},
+        timeout=30,
+    )
+    # SimpleJWT devuelve 401 para credenciales inválidas.
+    if resp.status_code in (400, 401):
+        ok(f"Credenciales inválidas rechazadas [{resp.status_code}]")
+        return True
+    fail(f"Se esperaba 401, se obtuvo {resp.status_code}")
+    return False
+
+
+def test_classify_without_token():
+    """Clasificar sin token de autenticación debe devolver 401."""
+    header("12. Clasificación sin autenticación")
+    if not TEST_IMAGE.exists():
+        warn(f"Imagen no encontrada: {TEST_IMAGE} — omitiendo")
+        return None
+    with open(TEST_IMAGE, "rb") as f:
+        resp = requests.post(
+            f"{BASE_URL}/api/classifications/",
+            files={"image": (TEST_IMAGE.name, f, "image/jpeg")},
+            timeout=60,
+        )
+    if resp.status_code == 401:
+        ok("Petición sin token rechazada [401]")
+        return True
+    fail(f"Se esperaba 401, se obtuvo {resp.status_code}")
+    return False
+
+
+def test_classify_non_image(token):
+    """Subir un archivo que no es imagen debe devolver 400 (validación de imagen)."""
+    header("13. Clasificación con archivo no-imagen")
+    headers = {"Authorization": f"Bearer {token}"}
+    fake = ("fake.jpg", io.BytesIO(b"esto no es una imagen"), "image/jpeg")
+    resp = requests.post(
+        f"{BASE_URL}/api/classifications/",
+        headers=headers,
+        files={"image": fake},
+        timeout=60,
+    )
+    if resp.status_code == 400:
+        ok("Archivo no-imagen rechazado [400]")
+        return True
+    if resp.status_code == 429:
+        warn("Rate limit alcanzado (429) — omitiendo validación de archivo")
+        return None
+    fail(f"Se esperaba 400, se obtuvo {resp.status_code}")
+    return False
+
+
 # ─── Punto de entrada ─────────────────────────────────────────────────────────
 
 def main():
+    global BASE_URL
+
     parser = argparse.ArgumentParser(description="Tests para AvoClassifier API")
     parser.add_argument("--email", default=os.environ.get("AVO_EMAIL", ""))
     parser.add_argument("--password", default=os.environ.get("AVO_PASSWORD", ""))
@@ -281,7 +380,6 @@ def main():
     parser.add_argument("--base-url", default=BASE_URL)
     args = parser.parse_args()
 
-    global BASE_URL
     BASE_URL = args.base_url.rstrip("/")
 
     print(f"\n{BOLD}AvoClassifier API — Test Suite{RESET}")
@@ -321,8 +419,14 @@ def main():
     results["classify"] = clf_id is not None
     results["poll"]     = test_poll_result(token, clf_id)
     results["history"]  = test_history(token)
+    results["export"]   = test_export_csv(token)
     results["stats"]    = test_admin_stats(token)
     results["refresh"]  = test_token_refresh(token)
+
+    # ── Casos negativos ───────────────────────────────────────────────────────
+    results["login_invalido"]   = test_login_invalid_credentials()
+    results["sin_token"]        = test_classify_without_token()
+    results["archivo_no_imagen"] = test_classify_non_image(token)
 
     # ── Resumen ───────────────────────────────────────────────────────────────
     header("Resumen")

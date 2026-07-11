@@ -3,13 +3,25 @@ Stress tests for AvoClassifier API.
 
 Usage:
     pip install locust
+
+    # Contra el servidor local (python manage.py runserver):
     locust -f locustfile.py --host=http://127.0.0.1:8000
+
+    # Contra el despliegue de Render (lo que golpea el frontend real):
+    locust -f locustfile.py --host=https://avoclassifier-api.onrender.com
 
 Then open http://localhost:8089 to configure users and ramp-up rate.
 
 For headless runs (CI / quick benchmarks):
     locust -f locustfile.py --host=http://127.0.0.1:8000 \
            --headless -u 20 -r 2 --run-time 60s
+
+Perfil de carga por etapas (rampa reproducible, tolerante al cold start de Render):
+    STRESS_SHAPE=1 locust -f locustfile.py \
+        --host=https://avoclassifier-api.onrender.com --headless
+    # Con STRESS_SHAPE=1 la forma de la carga (StagedRampUp) controla el número de
+    # usuarios y el spawn rate; los flags -u/-r se ignoran. Sin la env var, el
+    # comportamiento clásico -u/-r se mantiene intacto.
 
 User setup:
     Before running, create at least one regular user and one staff user
@@ -24,7 +36,7 @@ import os
 import random
 import time
 
-from locust import HttpUser, between, task
+from locust import HttpUser, LoadTestShape, between, task
 from PIL import Image as PilImage
 
 # ---------------------------------------------------------------------------
@@ -245,3 +257,37 @@ class AdminUser(HttpUser):
             headers=_auth_headers(self.token),
             name="/api/classifications/history/export/",
         )
+
+
+# ---------------------------------------------------------------------------
+# Load shape — perfil de rampa reproducible (opt-in via STRESS_SHAPE=1)
+# ---------------------------------------------------------------------------
+
+if os.environ.get("STRESS_SHAPE") == "1":
+
+    class StagedRampUp(LoadTestShape):
+        """
+        Perfil de carga por etapas, pensado para un servicio con cold start (Render):
+
+            1. Warm-up   — pocos usuarios para despertar el dyno sin saturarlo.
+            2. Ramp-up   — subida gradual hasta la carga objetivo.
+            3. Sustained — meseta a carga plena (mide throughput/latencia estable).
+            4. Ramp-down — bajada suave (observa recuperación).
+
+        Cada etapa: (duración acumulada en s, nº usuarios, spawn rate).
+        Ajusta libremente los valores según el objetivo del benchmark.
+        """
+
+        stages = [
+            {"duration": 30,  "users": 3,  "spawn_rate": 1},   # warm-up
+            {"duration": 90,  "users": 20, "spawn_rate": 2},   # ramp-up
+            {"duration": 210, "users": 20, "spawn_rate": 2},   # sustained (2 min)
+            {"duration": 240, "users": 5,  "spawn_rate": 2},   # ramp-down
+        ]
+
+        def tick(self):
+            run_time = self.get_run_time()
+            for stage in self.stages:
+                if run_time < stage["duration"]:
+                    return stage["users"], stage["spawn_rate"]
+            return None  # fin de la prueba
