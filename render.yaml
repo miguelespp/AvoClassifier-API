@@ -34,6 +34,10 @@ services:
         value: "cmep121/avoclassifier-space"
       - key: HF_TOKEN
         sync: false
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
     disk:
       name: avoclassifier-data
       mountPath: /opt/render/project/src/media

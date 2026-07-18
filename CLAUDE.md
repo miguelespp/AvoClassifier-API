@@ -26,9 +26,11 @@ source .venv/bin/activate          # Linux/macOS
 pip install -r requirements.txt
 
 # Apply migrations (includes token_blacklist and disease category updates)
+# A default superuser is auto-created after migrate if none exists yet — see
+# "Default Admin Auto-Creation" below. No manual createsuperuser step needed.
 python manage.py migrate
 
-# Create superuser for admin access
+# (Optional) create an additional/different superuser manually
 python manage.py createsuperuser
 
 # Start development server
@@ -109,6 +111,21 @@ POST /api/auth/login/          → returns access_token (30min) + refresh_token 
 POST /api/auth/token/refresh/  → new access_token (old refresh invalidated via blacklist)
 GET  /api/auth/profile/        → requires Bearer token
 ```
+
+### Default Admin Auto-Creation
+
+`users/signals.py` (`create_default_admin`) hooks Django's `post_migrate` signal (wired
+in `users/apps.py`'s `ready()`) so a superuser is created automatically the moment
+`migrate` finishes — no manual `createsuperuser` step required. It's idempotent: it
+no-ops if any superuser already exists, and it's skipped entirely under `manage.py test`.
+
+- **Dev environment** (`DEBUG=True`): if `DJANGO_SUPERUSER_EMAIL`/`DJANGO_SUPERUSER_PASSWORD`
+  aren't set, falls back to `admin@avoclassifier.local` / `admin12345`.
+- **Render/Fly (production, `DEBUG=False`)**: only creates the admin if both
+  `DJANGO_SUPERUSER_EMAIL` and `DJANGO_SUPERUSER_PASSWORD` are set (Render: set as
+  `sync: false` env vars in the dashboard, declared in `render.yaml`; Fly: `fly secrets
+  set DJANGO_SUPERUSER_EMAIL=... DJANGO_SUPERUSER_PASSWORD=...`). If unset, no admin is
+  created and nothing fails.
 
 ## Key Files
 
