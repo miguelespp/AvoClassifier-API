@@ -126,9 +126,9 @@ class ClassificationAdmin(admin.ModelAdmin):
         pct = obj.confidence * 100
         color = "#10b981" if pct >= 70 else "#f59e0b" if pct >= 50 else "#ef4444"
         return format_html(
-            '<span style="color:{};font-weight:bold">{:.1f}%</span>',
+            '<span style="color:{};font-weight:bold">{}%</span>',
             color,
-            pct,
+            f"{pct:.1f}",
         )
 
     @admin.display(description="Vista previa")
