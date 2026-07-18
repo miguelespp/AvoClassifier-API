@@ -6,7 +6,7 @@ import tempfile
 from django.utils import timezone
 
 from .ai_service import classifier
-from .models import Classification, ClassificationStatus
+from .models import Classification, ClassificationStatus, DiseaseCategory, LotStatus
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,39 @@ def _download_to_tempfile(image_field) -> str:
     finally:
         image_field.close()
 
+def _update_lot_statistics(classification: Classification):
+    """
+    Recalcula las estadísticas del lote al que pertenece
+    la clasificación.
+    """
+    if classification.lot is None:
+        return
+
+    lot = classification.lot
+    lot.lot_status = LotStatus.IN_PROGRESS
+
+    completed = lot.classifications.filter(
+        status=ClassificationStatus.COMPLETED
+    )
+
+    lot.total_images = lot.classifications.count()
+
+    lot.healthy_count = completed.filter(
+        predicted_category=DiseaseCategory.SALUDABLE
+    ).count()
+
+    lot.anthracnose_count = completed.filter(
+        predicted_category=DiseaseCategory.ANTRACNOSIS
+    ).count()
+
+    lot.scab_count = completed.filter(
+        predicted_category=DiseaseCategory.SARNA
+    ).count()
+
+    if lot.total_images > 0 and completed.count() == lot.total_images:
+        lot.lot_status = LotStatus.COMPLETED
+
+    lot.save()
 
 def run_classification(classification_id: int) -> Classification:
     """
@@ -89,6 +122,8 @@ def run_classification(classification_id: int) -> Classification:
             "predicted_category", "confidence", "raw_scores",
             "status", "classified_at",
         ])
+        _update_lot_statistics(classification)
+        
     except Exception as exc:
         logger.exception("Error al clasificar imagen id=%s", classification_id)
         classification.status = ClassificationStatus.FAILED

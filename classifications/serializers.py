@@ -1,15 +1,44 @@
 from rest_framework import serializers
 
-from .models import Classification
+from .models import Classification, Lot, DiseaseCategory
 
 MAX_IMAGE_SIZE_MB = 10
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+class ClassificationBaseSerializer(serializers.ModelSerializer):
+    """
+    Serializer base para ocultar información de ubicación
+    cuando el fruto es saludable.
+    """
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        if instance.predicted_category == DiseaseCategory.SALUDABLE:
+            data.pop("tree_code", None)
+            data.pop("north_coordinate", None)
+            data.pop("east_coordinate", None)
+
+        return data
 
 
 class ClassificationCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Classification
-        fields = ("id", "image", "webhook_url")
+        fields = (
+            "id", 
+            "image", 
+            "lot", 
+            "tree_code",
+            "north_coordinate",
+            "east_coordinate",
+            "webhook_url")
+        
+        extra_kwargs = {
+            "tree_code": {"required": False},
+            "north_coordinate": {"required": False},
+            "east_coordinate": {"required": False},
+        }
 
     def validate_image(self, image):
         if image.size > MAX_IMAGE_SIZE_MB * 1024 * 1024:
@@ -32,12 +61,26 @@ class ClassificationCreateSerializer(serializers.ModelSerializer):
             )
         return image
 
+    def validate_lot(self, lot):
+        """
+        Verifica que el lote pertenezca al usuario autenticado.
+        """
+        request = self.context["request"]
+
+        if lot.user != request.user:
+            raise serializers.ValidationError(
+                "No tienes permiso para utilizar este lote."
+            )
+
+        return lot
+    
+    
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
         return super().create(validated_data)
 
 
-class ClassificationResultSerializer(serializers.ModelSerializer):
+class ClassificationResultSerializer(ClassificationBaseSerializer):
     predicted_category_display = serializers.CharField(
         source="get_predicted_category_display",
         read_only=True,
@@ -53,6 +96,9 @@ class ClassificationResultSerializer(serializers.ModelSerializer):
             "predicted_category_display",
             "confidence",
             "raw_scores",
+            "tree_code",
+            "north_coordinate",
+            "east_coordinate",
             "error_message",
             "created_at",
             "classified_at",
@@ -60,7 +106,17 @@ class ClassificationResultSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class AdminClassificationSerializer(serializers.ModelSerializer):
+class ClassificationLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Classification
+        fields = (
+            "tree_code",
+            "north_coordinate",
+            "east_coordinate",
+        )
+
+
+class AdminClassificationSerializer(ClassificationBaseSerializer):
     """Extended serializer for admin — includes user info."""
 
     predicted_category_display = serializers.CharField(
@@ -82,9 +138,73 @@ class AdminClassificationSerializer(serializers.ModelSerializer):
             "predicted_category_display",
             "confidence",
             "raw_scores",
+            "tree_code",
+            "north_coordinate",
+            "east_coordinate",
             "error_message",
             "created_at",
             "classified_at",
             "deleted_at",
         )
         read_only_fields = fields
+    
+
+
+class LotSerializer(serializers.ModelSerializer):
+    """
+    Serializer para crear y listar lotes.
+    """
+
+    class Meta:
+        model = Lot
+        fields = (
+            "id",
+            "lot_name",
+            "description",
+            "lot_status",
+            "total_images",
+            "healthy_count",
+            "anthracnose_count",
+            "scab_count",
+            "created_at",
+            "updated_at",
+        )
+
+        read_only_fields = (
+            "id",
+            "lot_status",
+            "total_images",
+            "healthy_count",
+            "anthracnose_count",
+            "scab_count",
+            "created_at",
+            "updated_at",
+        )
+        
+
+class ClassificationBulkCreateSerializer(serializers.Serializer):
+    """
+    Serializer para carga masiva de imágenes asociadas a un lote.
+    """
+
+    lot = serializers.PrimaryKeyRelatedField(
+        queryset=Lot.objects.all()
+    )
+
+    images = serializers.ListField(
+        child=serializers.ImageField(),
+        allow_empty=False
+    )
+
+    def validate_lot(self, lot):
+        """
+        Verifica que el lote pertenezca al usuario autenticado.
+        """
+        request = self.context["request"]
+
+        if lot.user != request.user:
+            raise serializers.ValidationError(
+                "No tienes permiso para utilizar este lote."
+            )
+
+        return lot

@@ -29,11 +29,19 @@ class AdminPagination(PageNumberPagination):
 from users.permissions import IsAdminOrStaff
 
 from .ai_service import classifier
-from .models import Classification, ClassificationStatus, DiseaseCategory
+from .models import (
+    Classification,
+    ClassificationStatus,
+    DiseaseCategory,
+    Lot,
+)
 from .serializers import (
     AdminClassificationSerializer,
     ClassificationCreateSerializer,
+    ClassificationBulkCreateSerializer,
     ClassificationResultSerializer,
+    LotSerializer,
+    ClassificationLocationSerializer,
 )
 from .services import run_classification
 
@@ -44,6 +52,36 @@ User = get_user_model()
 # User-facing views
 # ---------------------------------------------------------------------------
 
+@extend_schema(
+    tags=["classifications"],
+    summary="Crear y listar lotes",
+    description=(
+        "Permite crear un nuevo lote o listar los lotes "
+        "registrados por el usuario autenticado."
+    ),
+)
+class LotListCreateView(generics.ListCreateAPIView):
+    permission_classes = (IsAuthenticated,)
+    serializer_class = LotSerializer
+
+    def get_queryset(self):
+        return Lot.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+        
+# CRUD para el lote
+@extend_schema(
+    tags=["classifications"],
+    summary="Consultar, editar o eliminar un lote",
+)
+class LotDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = (IsAuthenticated,)
+    serializer_class = LotSerializer
+
+    def get_queryset(self):
+        # Solo puede acceder a sus propios lotes
+        return Lot.objects.filter(user=self.request.user)
 
 @extend_schema(
     tags=["classifications"],
@@ -59,6 +97,7 @@ User = get_user_model()
     request={"multipart/form-data": ClassificationCreateSerializer},
     responses={202: ClassificationResultSerializer},
 )
+
 class ClassificationCreateView(generics.CreateAPIView):
     permission_classes = (IsAuthenticated,)
     throttle_classes = (ClassificationThrottle,)
@@ -77,16 +116,82 @@ class ClassificationCreateView(generics.CreateAPIView):
 
 @extend_schema(
     tags=["classifications"],
+    summary="Carga masiva de imágenes por lote",
+    description=(
+        "Carga múltiples imágenes, ejecuta la clasificación "
+        "y devuelve los resultados completos."
+    ),
+)
+class ClassificationBulkCreateView(generics.CreateAPIView):
+
+    permission_classes = (IsAuthenticated,)
+    serializer_class = ClassificationBulkCreateSerializer
+
+    def create(self, request, *args, **kwargs):
+
+        serializer = self.get_serializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        lot = serializer.validated_data["lot"]
+        images = serializer.validated_data["images"]
+
+        results = []
+
+        for image in images:
+
+            classification = Classification.objects.create(
+                user=request.user,
+                lot=lot,
+                image=image,
+            )
+
+            # Ejecuta la IA y espera el resultado
+            run_classification(classification.pk)
+
+            # Recarga el objeto desde la BD porque run_classification()
+            # actualiza los campos en la base de datos
+            classification.refresh_from_db()
+
+            results.append(
+                ClassificationResultSerializer(
+                    classification,
+                    context={"request": request}
+                ).data
+            )
+
+        return Response(
+            {
+                "lot": lot.id,
+                "classifications": results,
+                "status": "completed"
+            },
+            status=status.HTTP_201_CREATED
+        )
+        
+        
+@extend_schema(
+    tags=["classifications"],
     summary="Resultado de clasificación",
     description="Consulta el estado y resultado de una clasificación por ID. Útil para polling.",
     responses={200: ClassificationResultSerializer},
 )
-class ClassificationDetailView(generics.RetrieveAPIView):
+class ClassificationDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = (IsAuthenticated,)
-    serializer_class = ClassificationResultSerializer
-
     def get_queryset(self):
-        return Classification.objects.filter(user=self.request.user)
+        return Classification.objects.filter(
+            user=self.request.user
+        )
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return ClassificationLocationSerializer
+
+        return ClassificationResultSerializer
 
 
 @extend_schema(

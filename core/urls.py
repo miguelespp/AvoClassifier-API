@@ -6,7 +6,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, Spec
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/auth/', include('users.urls')),
+    path('api/auth/', include('users.urls')), #  http://127.0.0.1:8000/api/auth/login/
     path('api/classifications/', include('classifications.urls')),
     # API Docs
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

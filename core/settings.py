@@ -132,7 +132,7 @@ STORAGES = {
     },
 }
 
-if os.environ.get("USE_GCS") == "true":
+if os.environ.get("USE_GCS") == "false":
     _gcs_options = {
         "bucket_name": os.environ["GS_BUCKET_NAME"],   # ej: avo-classifier.firebasestorage.app
         "project_id": os.environ.get("GS_PROJECT_ID"),
